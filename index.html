@@ -1,0 +1,544 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged,
+  signOut 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc,
+  query,
+  where
+} from 'firebase/firestore';
+import { 
+  Users, 
+  BookOpen, 
+  CheckCircle, 
+  BarChart3, 
+  LogOut, 
+  Plus, 
+  Trash2, 
+  FileText, 
+  UserCircle,
+  Clock,
+  ChevronRight,
+  Menu,
+  X,
+  LayoutDashboard
+} from 'lucide-react';
+
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'tvet-edu-system';
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [role, setRole] = useState(null); // 'admin' atau 'pelajar'
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // State Data
+  const [students, setStudents] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [attendance, setAttendance] = useState([]);
+  const [notes, setNotes] = useState([]);
+
+  // --- Auth Logic ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth error:", error);
+      }
+    };
+
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, async (currUser) => {
+      if (currUser) {
+        // Semak peranan dalam Firestore (default ke admin untuk demo pertama kali)
+        const userRef = doc(db, 'artifacts', appId, 'users', currUser.uid, 'profile', 'data');
+        const userSnap = await getDoc(userRef);
+        
+        if (userSnap.exists()) {
+          setRole(userSnap.data().role);
+        } else {
+          // Jika pengguna baru, set sebagai admin untuk tujuan demo setup
+          const initialRole = 'admin';
+          await setDoc(userRef, { 
+            uid: currUser.uid, 
+            role: initialRole, 
+            email: currUser.email || 'user@tvet.edu.my',
+            name: 'Pengajar TVET'
+          });
+          setRole(initialRole);
+        }
+        setUser(currUser);
+      } else {
+        setUser(null);
+        setRole(null);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // --- Data Listeners ---
+  useEffect(() => {
+    if (!user) return;
+
+    // Listen to Students (Public data for sharing between admin/student contexts in this demo)
+    const unsubStudents = onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', 'students'),
+      (snapshot) => setStudents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))),
+      (err) => console.error(err)
+    );
+
+    // Listen to Courses
+    const unsubCourses = onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', 'courses'),
+      (snapshot) => setCourses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))),
+      (err) => console.error(err)
+    );
+
+    // Listen to Notes
+    const unsubNotes = onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', 'notes'),
+      (snapshot) => setNotes(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))),
+      (err) => console.error(err)
+    );
+
+    // Listen to Attendance
+    const unsubAttendance = onSnapshot(
+      collection(db, 'artifacts', appId, 'public', 'data', 'attendance'),
+      (snapshot) => setAttendance(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))),
+      (err) => console.error(err)
+    );
+
+    return () => {
+      unsubStudents();
+      unsubCourses();
+      unsubNotes();
+      unsubAttendance();
+    };
+  }, [user]);
+
+  // --- Actions ---
+  const handleAddStudent = async (e) => {
+    e.preventDefault();
+    const name = e.target.studentName.value;
+    const studentID = e.target.studentID.value;
+    if (!name || !studentID) return;
+
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'students'), {
+      name,
+      studentID,
+      joinedAt: new Date().toISOString(),
+      performance: 0
+    });
+    e.target.reset();
+  };
+
+  const handleAddCourse = async (e) => {
+    e.preventDefault();
+    const title = e.target.courseTitle.value;
+    const code = e.target.courseCode.value;
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'courses'), {
+      title,
+      code,
+      createdAt: new Date().toISOString()
+    });
+    e.target.reset();
+  };
+
+  const handleAddNote = async (e) => {
+    e.preventDefault();
+    const title = e.target.noteTitle.value;
+    const url = e.target.noteUrl.value;
+    const courseId = e.target.courseId.value;
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'notes'), {
+      title,
+      url,
+      courseId,
+      uploadedAt: new Date().toISOString()
+    });
+    e.target.reset();
+  };
+
+  const markAttendance = async (studentId, status) => {
+    const today = new Date().toISOString().split('T')[0];
+    const existing = attendance.find(a => a.studentId === studentId && a.date === today);
+
+    if (existing) {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'attendance', existing.id), { status });
+    } else {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'attendance'), {
+        studentId,
+        status,
+        date: today,
+        timestamp: new Date().toISOString()
+      });
+    }
+  };
+
+  // --- Views ---
+
+  const Dashboard = () => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-blue-100 flex items-center space-x-4">
+          <div className="bg-blue-100 p-3 rounded-lg text-blue-600"><Users size={24}/></div>
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Jumlah Pelajar</p>
+            <p className="text-2xl font-bold text-gray-800">{students.length}</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-purple-100 flex items-center space-x-4">
+          <div className="bg-purple-100 p-3 rounded-lg text-purple-600"><BookOpen size={24}/></div>
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Kursus Aktif</p>
+            <p className="text-2xl font-bold text-gray-800">{courses.length}</p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-green-100 flex items-center space-x-4">
+          <div className="bg-green-100 p-3 rounded-lg text-green-600"><CheckCircle size={24}/></div>
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Kehadiran Hari Ini</p>
+            <p className="text-2xl font-bold text-gray-800">
+              {attendance.filter(a => a.date === new Date().toISOString().split('T')[0] && a.status === 'Hadir').length}
+            </p>
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-orange-100 flex items-center space-x-4">
+          <div className="bg-orange-100 p-3 rounded-lg text-orange-600"><FileText size={24}/></div>
+          <div>
+            <p className="text-sm text-gray-500 font-medium">Nota Dimuatnaik</p>
+            <p className="text-2xl font-bold text-gray-800">{notes.length}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+          <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
+            <Clock className="mr-2 text-blue-500" size={20}/> Aktiviti Terkini
+          </h3>
+          <div className="space-y-4">
+            {notes.slice(0, 5).map(note => (
+              <div key={note.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                <div className="flex items-center space-x-3">
+                  <FileText size={18} className="text-gray-400"/>
+                  <div>
+                    <p className="text-sm font-semibold">{note.title}</p>
+                    <p className="text-xs text-gray-500">Nota baru dimuatnaik</p>
+                  </div>
+                </div>
+                <span className="text-xs text-gray-400">{new Date(note.uploadedAt).toLocaleDateString()}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+          <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center">
+            <BarChart3 className="mr-2 text-purple-500" size={20}/> Ringkasan Prestasi
+          </h3>
+          <div className="space-y-4">
+            {students.slice(0, 5).map(student => (
+              <div key={student.id} className="space-y-1">
+                <div className="flex justify-between text-sm">
+                  <span>{student.name}</span>
+                  <span className="font-bold text-blue-600">{student.performance || 0}%</span>
+                </div>
+                <div className="w-full bg-gray-100 rounded-full h-2">
+                  <div 
+                    className="bg-blue-500 h-2 rounded-full transition-all duration-500" 
+                    style={{ width: `${student.performance || 0}%` }}
+                  ></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const StudentManager = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+      <div className="p-6 border-b border-gray-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <h2 className="text-xl font-bold text-gray-800">Pengurusan Pelajar</h2>
+        {role === 'admin' && (
+          <form onSubmit={handleAddStudent} className="flex flex-wrap gap-2">
+            <input name="studentName" placeholder="Nama Pelajar" className="border p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-400" required />
+            <input name="studentID" placeholder="ID Pelajar" className="border p-2 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-400" required />
+            <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm flex items-center hover:bg-blue-700 transition">
+              <Plus size={16} className="mr-1"/> Tambah
+            </button>
+          </form>
+        )}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left">
+          <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+            <tr>
+              <th className="px-6 py-4">Nama</th>
+              <th className="px-6 py-4">ID</th>
+              <th className="px-6 py-4">Status</th>
+              <th className="px-6 py-4">Kehadiran Hari Ini</th>
+              {role === 'admin' && <th className="px-6 py-4 text-center">Tindakan</th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {students.map(s => {
+              const todayAtt = attendance.find(a => a.studentId === s.id && a.date === new Date().toISOString().split('T')[0]);
+              return (
+                <tr key={s.id} className="hover:bg-gray-50 transition">
+                  <td className="px-6 py-4 font-medium text-gray-900">{s.name}</td>
+                  <td className="px-6 py-4 text-sm text-gray-500">{s.studentID}</td>
+                  <td className="px-6 py-4 text-sm">
+                    <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">Aktif</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex space-x-2">
+                      <button 
+                        onClick={() => markAttendance(s.id, 'Hadir')}
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${todayAtt?.status === 'Hadir' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-green-50'}`}
+                      >
+                        Hadir
+                      </button>
+                      <button 
+                        onClick={() => markAttendance(s.id, 'Tidak Hadir')}
+                        className={`px-3 py-1 rounded-md text-xs font-medium transition ${todayAtt?.status === 'Tidak Hadir' ? 'bg-red-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-red-50'}`}
+                      >
+                        X
+                      </button>
+                    </div>
+                  </td>
+                  {role === 'admin' && (
+                    <td className="px-6 py-4 text-center">
+                      <button 
+                        onClick={() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'students', s.id))}
+                        className="text-red-400 hover:text-red-600 transition"
+                      >
+                        <Trash2 size={18}/>
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  const NoteLibrary = () => (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-bold text-gray-800">Bahan Pembelajaran</h2>
+        {role === 'admin' && (
+          <form onSubmit={handleAddNote} className="flex gap-2 bg-white p-2 rounded-xl shadow-sm border border-gray-100">
+            <input name="noteTitle" placeholder="Tajuk Nota" className="border p-2 rounded-lg text-sm" required />
+            <input name="noteUrl" placeholder="Link (URL)" className="border p-2 rounded-lg text-sm" required />
+            <select name="courseId" className="border p-2 rounded-lg text-sm">
+              {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
+            </select>
+            <button type="submit" className="bg-purple-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-purple-700">Upload</button>
+          </form>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {notes.map(note => (
+          <div key={note.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition group">
+            <div className="flex justify-between items-start mb-4">
+              <div className="bg-purple-50 p-3 rounded-lg text-purple-600">
+                <BookOpen size={24}/>
+              </div>
+              {role === 'admin' && (
+                <button 
+                  onClick={() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notes', note.id))}
+                  className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition"
+                >
+                  <Trash2 size={18}/>
+                </button>
+              )}
+            </div>
+            <h3 className="font-bold text-gray-800 mb-1">{note.title}</h3>
+            <p className="text-xs text-gray-400 mb-4">{courses.find(c => c.id === note.courseId)?.title || 'Kursus Umum'}</p>
+            <a 
+              href={note.url} 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="w-full inline-flex justify-center items-center py-2 px-4 bg-gray-50 text-gray-600 rounded-lg text-sm font-semibold hover:bg-purple-600 hover:text-white transition"
+            >
+              Akses Bahan <ChevronRight size={16} className="ml-1"/>
+            </a>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const CourseManager = () => (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+      <div className="p-6 border-b border-gray-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <h2 className="text-xl font-bold text-gray-800">Pengurusan Kursus & Modul</h2>
+        {role === 'admin' && (
+          <form onSubmit={handleAddCourse} className="flex flex-wrap gap-2">
+            <input name="courseTitle" placeholder="Nama Kursus" className="border p-2 rounded-lg text-sm" required />
+            <input name="courseCode" placeholder="Kod Kursus" className="border p-2 rounded-lg text-sm" required />
+            <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm flex items-center hover:bg-blue-700 transition">
+              <Plus size={16} className="mr-1"/> Cipta
+            </button>
+          </form>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 p-6">
+        {courses.map(course => (
+          <div key={course.id} className="border border-gray-100 rounded-xl p-4 relative group">
+            <div className="flex justify-between items-start mb-2">
+              <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded">{course.code}</span>
+              {role === 'admin' && (
+                <button 
+                  onClick={() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'courses', course.id))}
+                  className="text-red-300 hover:text-red-500 transition"
+                >
+                  <Trash2 size={16}/>
+                </button>
+              )}
+            </div>
+            <h4 className="font-bold text-gray-800 mb-4">{course.title}</h4>
+            <div className="flex items-center text-xs text-gray-400 space-x-3">
+              <span className="flex items-center"><Users size={12} className="mr-1"/> {students.length} Pelajar</span>
+              <span className="flex items-center"><FileText size={12} className="mr-1"/> {notes.filter(n => n.courseId === course.id).length} Nota</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  // --- Render ---
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] flex font-sans">
+      {/* Sidebar Mobile Overlay */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setSidebarOpen(false)}></div>
+      )}
+
+      {/* Sidebar Navigation */}
+      <aside className={`fixed inset-y-0 left-0 bg-white border-r border-gray-100 w-64 transform ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0 transition-transform duration-300 z-50`}>
+        <div className="p-6">
+          <div className="flex items-center space-x-3 mb-10">
+            <div className="bg-blue-600 p-2 rounded-xl text-white">
+              <BookOpen size={24}/>
+            </div>
+            <h1 className="text-xl font-black text-gray-800 tracking-tight">E-TVET Pro</h1>
+          </div>
+
+          <nav className="space-y-1">
+            <button 
+              onClick={() => { setActiveTab('dashboard'); setSidebarOpen(false); }}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-semibold transition ${activeTab === 'dashboard' ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              <LayoutDashboard size={20}/> <span>Dashboard</span>
+            </button>
+            <button 
+              onClick={() => { setActiveTab('students'); setSidebarOpen(false); }}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-semibold transition ${activeTab === 'students' ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              <Users size={20}/> <span>Pelajar</span>
+            </button>
+            <button 
+              onClick={() => { setActiveTab('courses'); setSidebarOpen(false); }}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-semibold transition ${activeTab === 'courses' ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              <CheckCircle size={20}/> <span>Kursus</span>
+            </button>
+            <button 
+              onClick={() => { setActiveTab('notes'); setSidebarOpen(false); }}
+              className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl text-sm font-semibold transition ${activeTab === 'notes' ? 'bg-blue-50 text-blue-600' : 'text-gray-500 hover:bg-gray-50'}`}
+            >
+              <FileText size={20}/> <span>Nota Kursus</span>
+            </button>
+          </nav>
+        </div>
+
+        <div className="absolute bottom-0 w-full p-6 border-t border-gray-50">
+          <div className="flex items-center space-x-3 mb-6">
+            <div className="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center text-gray-600">
+              <UserCircle size={24}/>
+            </div>
+            <div>
+              <p className="text-sm font-bold text-gray-800 capitalize">{role === 'admin' ? 'Pengajar' : 'Pelajar'}</p>
+              <p className="text-xs text-gray-400 truncate w-32">{user?.uid.substring(0,8)}...</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => signOut(auth)}
+            className="w-full flex items-center justify-center space-x-2 py-2 text-gray-400 hover:text-red-500 transition text-sm font-medium"
+          >
+            <LogOut size={18}/> <span>Log Keluar</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <main className="flex-1 lg:ml-64 p-4 lg:p-10">
+        <header className="flex justify-between items-center mb-10">
+          <div className="flex items-center">
+            <button className="lg:hidden mr-4 text-gray-600" onClick={() => setSidebarOpen(true)}>
+              <Menu size={24}/>
+            </button>
+            <h2 className="text-2xl font-bold text-gray-800 capitalize">{activeTab}</h2>
+          </div>
+          <div className="hidden md:flex bg-white px-4 py-2 rounded-full border border-gray-100 shadow-sm items-center space-x-2">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span className="text-xs font-semibold text-gray-500">Sistem Beroperasi (V1.0)</span>
+          </div>
+        </header>
+
+        {activeTab === 'dashboard' && <Dashboard />}
+        {activeTab === 'students' && <StudentManager />}
+        {activeTab === 'courses' && <CourseManager />}
+        {activeTab === 'notes' && <NoteLibrary />}
+
+        <footer className="mt-20 text-center text-gray-400 text-xs">
+          <p>© 2026 TVET Education Digital System. Dibina untuk Pengurusan Pintar.</p>
+        </footer>
+      </main>
+    </div>
+  );
+};
